@@ -1,4 +1,4 @@
-"""Интерфейс: иконка в трее (pystray) и окно с отчётами/проектами/настройками (tkinter)."""
+"""Интерфейс workyr: иконка в трее (pystray) и тёмное окно (tkinter)."""
 from __future__ import annotations
 
 import base64
@@ -10,22 +10,30 @@ import sys
 import tkinter as tk
 import tkinter.font as tkfont
 from datetime import date, datetime, timedelta
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, ttk
 from typing import Callable, List, Optional
 
 import pystray
 
 import core
+import theme
 import winapi
 from icons import make_icon, png_bytes
 
-log = logging.getLogger("worktracker.ui")
+log = logging.getLogger("workyr.ui")
 
+APP_TITLE = "workyr"
 STATE_LABELS = {
     "recording": "● Идёт запись",
     "idle": "◐ Нет движения",
     "other": "○ Не рабочее окно",
     "paused": "‖ Пауза",
+}
+STATE_STYLES = {
+    "recording": "StateRecording.TLabel",
+    "idle": "StateIdle.TLabel",
+    "other": "StateOther.TLabel",
+    "paused": "StatePaused.TLabel",
 }
 WEEKDAYS = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
 PERIODS = [
@@ -69,46 +77,135 @@ def fix_clipboard_shortcuts(root: tk.Misc) -> None:
 
 
 # ----------------------------------------------------------------------------
-# Универсальный диалог с полями
+# Тёмные диалоги (вместо светлых системных)
 # ----------------------------------------------------------------------------
 
-class FormDialog(tk.Toplevel):
-    def __init__(self, parent, title: str, fields: List[dict], hint: str = "", validate: Optional[Callable] = None):
+class BaseDialog(tk.Toplevel):
+    def __init__(self, parent, title: str):
         super().__init__(parent)
+        self.withdraw()
         self.title(title)
+        self.configure(bg=theme.BG)
         self.resizable(False, False)
-        self.transient(parent)
-        self.result: Optional[dict] = None
+        self._parent = parent
+        self.result = None
+        try:
+            top = parent.winfo_toplevel()
+            if top.winfo_viewable():
+                self.transient(top)
+        except (tk.TclError, AttributeError):
+            pass
+
+    def _center(self) -> None:
+        self.update_idletasks()
+        w, h = self.winfo_reqwidth(), self.winfo_reqheight()
+        x = (self.winfo_screenwidth() - w) // 2
+        y = (self.winfo_screenheight() - h) // 3
+        try:
+            top = self._parent.winfo_toplevel()
+            if top.winfo_viewable():
+                x = top.winfo_rootx() + (top.winfo_width() - w) // 2
+                y = top.winfo_rooty() + (top.winfo_height() - h) // 3
+        except (tk.TclError, AttributeError):
+            pass
+        self.geometry(f"+{max(0, x)}+{max(0, y)}")
+
+    def run(self):
+        theme.dark_titlebar(self)
+        self._center()
+        self.deiconify()
+        try:
+            self.wait_visibility()
+            self.grab_set()
+        except tk.TclError:
+            pass
+        self.focus_force()
+        self.wait_window(self)
+        return self.result
+
+
+class MessageDialog(BaseDialog):
+    BADGES = {
+        "info": ("i", theme.ACCENT_HOVER),
+        "ask": ("?", theme.ACCENT_HOVER),
+        "warn": ("!", theme.AMBER),
+        "error": ("✕", theme.RED),
+    }
+
+    def __init__(self, parent, title: str, text: str, kind: str = "info", buttons=("OK",)):
+        super().__init__(parent, title)
+        self._cancel_index = len(buttons) - 1 if len(buttons) > 1 else 0
+        body = ttk.Frame(self, padding=(24, 22, 24, 18))
+        body.pack(fill="both", expand=True)
+        glyph, color = self.BADGES.get(kind, self.BADGES["info"])
+        tk.Label(body, text=glyph, bg=color, fg=theme.BG, width=3, font=(theme.FAMILY, 13, "bold")).grid(
+            row=0, column=0, sticky="n")
+        ttk.Label(body, text=text, wraplength=380, justify="left").grid(row=0, column=1, padx=(16, 0), sticky="w")
+        bar = ttk.Frame(body)
+        bar.grid(row=1, column=0, columnspan=2, sticky="e", pady=(20, 0))
+        for i, label in enumerate(buttons):
+            ttk.Button(bar, text=label, style="Accent.TButton" if i == 0 else "TButton",
+                       command=lambda i=i: self._done(i)).pack(side="right", padx=(8, 0))
+        self.bind("<Return>", lambda e: self._done(0))
+        self.bind("<Escape>", lambda e: self._done(self._cancel_index if len(buttons) > 1 else 0))
+
+    def _done(self, index: int) -> None:
+        self.result = index
+        self.destroy()
+
+
+def info(parent, title: str, text: str) -> None:
+    MessageDialog(parent, title, text, "info").run()
+
+
+def warn(parent, title: str, text: str) -> None:
+    MessageDialog(parent, title, text, "warn").run()
+
+
+def error(parent, title: str, text: str) -> None:
+    MessageDialog(parent, title, text, "error").run()
+
+
+def confirm(parent, title: str, text: str, yes: str = "Да", no: str = "Нет") -> bool:
+    return MessageDialog(parent, title, text, "ask", (yes, no)).run() == 0
+
+
+class FormDialog(BaseDialog):
+    def __init__(self, parent, title: str, fields: List[dict], hint: str = "", validate: Optional[Callable] = None):
+        super().__init__(parent, title)
         self._validate = validate
+        self._owner = parent
         self.vars = {}
         self.widgets = {}
-        body = ttk.Frame(self, padding=14)
+        body = ttk.Frame(self, padding=(22, 20, 22, 18))
         body.pack(fill="both", expand=True)
         row = 0
         first = None
         for f in fields:
-            ttk.Label(body, text=f["label"]).grid(row=row, column=0, sticky="w", pady=4, padx=(0, 10))
+            ttk.Label(body, text=f["label"], style="Muted.TLabel").grid(row=row, column=0, sticky="w",
+                                                                        pady=6, padx=(0, 14))
             var = tk.StringVar(value=f.get("value", ""))
             self.vars[f["key"]] = var
             if f.get("choices"):
-                w = ttk.Combobox(body, textvariable=var, values=f["choices"], state="readonly", width=f.get("width", 38))
+                w = ttk.Combobox(body, textvariable=var, values=f["choices"], state="readonly",
+                                 width=f.get("width", 38))
             else:
                 w = ttk.Entry(body, textvariable=var, width=f.get("width", 40))
-            w.grid(row=row, column=1, sticky="ew", pady=4)
+            w.grid(row=row, column=1, sticky="ew", pady=6)
             self.widgets[f["key"]] = w
             first = first or w
             row += 1
         if hint:
-            ttk.Label(body, text=hint, foreground="#666666", wraplength=440, justify="left").grid(
-                row=row, column=0, columnspan=2, sticky="w", pady=(6, 0))
+            ttk.Label(body, text=hint, style="Muted.TLabel", wraplength=460, justify="left").grid(
+                row=row, column=0, columnspan=2, sticky="w", pady=(8, 0))
             row += 1
         self.extra = ttk.Frame(body)
         self.extra.grid(row=row, column=0, columnspan=2, sticky="ew")
         row += 1
         buttons = ttk.Frame(body)
-        buttons.grid(row=row, column=0, columnspan=2, sticky="e", pady=(14, 0))
-        ttk.Button(buttons, text="OK", command=self._ok).pack(side="right")
-        ttk.Button(buttons, text="Отмена", command=self.destroy).pack(side="right", padx=6)
+        buttons.grid(row=row, column=0, columnspan=2, sticky="e", pady=(18, 0))
+        ttk.Button(buttons, text="OK", style="Accent.TButton", command=self._ok).pack(side="right")
+        ttk.Button(buttons, text="Отмена", command=self.destroy).pack(side="right", padx=8)
         self.bind("<Return>", lambda e: self._ok())
         self.bind("<Escape>", lambda e: self.destroy())
         if first is not None:
@@ -117,31 +214,29 @@ class FormDialog(tk.Toplevel):
     def _ok(self) -> None:
         values = {k: v.get() for k, v in self.vars.items()}
         if self._validate:
-            error = self._validate(values)
-            if error:
-                messagebox.showwarning("Проверьте данные", error, parent=self)
+            problem = self._validate(values)
+            if problem:
+                warn(self, "Проверьте данные", problem)
                 return
         self.result = values
         self.destroy()
-
-    def run(self) -> Optional[dict]:
-        try:
-            self.update_idletasks()
-            self.wait_visibility()
-            self.grab_set()
-        except tk.TclError:
-            pass
-        self.wait_window(self)
-        return self.result
 
 
 # ----------------------------------------------------------------------------
 # Вкладки главного окна
 # ----------------------------------------------------------------------------
 
+def make_card(parent, caption: str):
+    frame = ttk.Frame(parent, style="Card.TFrame", padding=(18, 12))
+    ttk.Label(frame, text=caption, style="CardMuted.TLabel").pack(anchor="w")
+    var = tk.StringVar(value="—")
+    ttk.Label(frame, textvariable=var, style="CardBig.TLabel").pack(anchor="w", pady=(2, 0))
+    return frame, var
+
+
 class ReportTab(ttk.Frame):
     def __init__(self, parent, mw: "MainWindow"):
-        super().__init__(parent, padding=8)
+        super().__init__(parent, padding=14)
         self.mw = mw
         self.app = mw.app
         self.report: Optional[core.Report] = None
@@ -150,43 +245,49 @@ class ReportTab(ttk.Frame):
 
         bar = ttk.Frame(self)
         bar.pack(fill="x")
-        ttk.Label(bar, text="Период:").pack(side="left")
+        ttk.Label(bar, text="Период", style="Muted.TLabel").pack(side="left")
         self.period_var = tk.StringVar(value=dict(PERIODS)["week"])
         combo = ttk.Combobox(bar, textvariable=self.period_var, values=[p[1] for p in PERIODS],
                              state="readonly", width=16)
-        combo.pack(side="left", padx=6)
+        combo.pack(side="left", padx=8)
         combo.bind("<<ComboboxSelected>>", lambda e: self._on_period())
         today = date.today().strftime("%d.%m.%Y")
         self.from_var = tk.StringVar(value=today)
         self.to_var = tk.StringVar(value=today)
         self.from_entry = ttk.Entry(bar, textvariable=self.from_var, width=11)
         self.to_entry = ttk.Entry(bar, textvariable=self.to_var, width=11)
-        ttk.Label(bar, text="с").pack(side="left", padx=(8, 2))
+        ttk.Label(bar, text="с", style="Muted.TLabel").pack(side="left", padx=(8, 4))
         self.from_entry.pack(side="left")
-        ttk.Label(bar, text="по").pack(side="left", padx=(6, 2))
+        ttk.Label(bar, text="по", style="Muted.TLabel").pack(side="left", padx=(8, 4))
         self.to_entry.pack(side="left")
         self.show_btn = ttk.Button(bar, text="Показать", command=self.refresh)
-        self.show_btn.pack(side="left", padx=6)
-        ttk.Button(bar, text="Экспорт в CSV…", command=self.export).pack(side="right")
+        self.show_btn.pack(side="left", padx=8)
+        ttk.Button(bar, text="Экспорт в CSV…", style="Accent.TButton", command=self.export).pack(side="right")
         self.from_entry.bind("<Return>", lambda e: self.refresh())
         self.to_entry.bind("<Return>", lambda e: self.refresh())
 
-        self.total_var = tk.StringVar()
-        ttk.Label(self, textvariable=self.total_var, font=self.bold).pack(anchor="w", pady=(10, 4))
+        cards = ttk.Frame(self)
+        cards.pack(fill="x", pady=(14, 12))
+        c1, self.card_time = make_card(cards, "ВСЕГО ЗА ПЕРИОД")
+        c2, self.card_amount = make_card(cards, "СУММА")
+        c3, self.card_projects = make_card(cards, "ПРОЕКТОВ")
+        c1.pack(side="left", fill="x", expand=True)
+        c2.pack(side="left", fill="x", expand=True, padx=10)
+        c3.pack(side="left", fill="x", expand=True)
 
         paned = ttk.PanedWindow(self, orient="vertical")
         paned.pack(fill="both", expand=True)
 
         top = ttk.Frame(paned)
         self.tree_p = ttk.Treeview(top, columns=("time", "hours", "amount"), show="tree headings", height=6)
-        self.tree_p.heading("#0", text="Проект")
+        self.tree_p.heading("#0", text="Проект", anchor="w")
         self.tree_p.heading("time", text="Время (ч:мм)")
         self.tree_p.heading("hours", text="Часы")
         self.tree_p.heading("amount", text="Сумма")
         self.tree_p.column("#0", width=330)
         for c in ("time", "hours", "amount"):
             self.tree_p.column(c, width=110, anchor="e")
-        self.tree_p.tag_configure("total", font=self.bold)
+        self.tree_p.tag_configure("total", font=self.bold, foreground=theme.ACCENT_HOVER)
         sb = ttk.Scrollbar(top, orient="vertical", command=self.tree_p.yview)
         self.tree_p.configure(yscrollcommand=sb.set)
         self.tree_p.pack(side="left", fill="both", expand=True)
@@ -195,7 +296,7 @@ class ReportTab(ttk.Frame):
 
         bottom = ttk.Frame(paned)
         self.tree_d = ttk.Treeview(bottom, columns=("time", "hours"), show="tree headings", height=10)
-        self.tree_d.heading("#0", text="По дням")
+        self.tree_d.heading("#0", text="По дням", anchor="w")
         self.tree_d.heading("time", text="Время (ч:мм)")
         self.tree_d.heading("hours", text="Часы")
         self.tree_d.column("#0", width=330)
@@ -237,7 +338,7 @@ class ReportTab(ttk.Frame):
                 return core.period_bounds(key, custom_from=a, custom_to=b)
             return core.period_bounds(key)
         except ValueError as exc:
-            messagebox.showwarning("Период", f"{exc}\nФормат даты: 31.12.2026", parent=self)
+            warn(self, "Период", f"{exc}\nФормат даты: 31.12.2026")
             return None
 
     def refresh(self) -> None:
@@ -265,8 +366,10 @@ class ReportTab(ttk.Frame):
             for r in day.items:
                 self.tree_d.insert(node, "end", text="    " + r.name,
                                    values=(core.fmt_hm(r.seconds), core.fmt_hours(r.seconds)))
-        self.total_var.set(f"Всего за период: {core.fmt_hm(report.total_seconds)} ч "
-                           f"({core.fmt_hours(report.total_seconds)} ч)")
+
+        self.card_time.set(f"{core.fmt_hm(report.total_seconds)} ч")
+        self.card_amount.set(total_amount or "—")
+        self.card_projects.set(str(len(report.rows)))
 
     def export(self) -> None:
         period = self._period()
@@ -274,7 +377,7 @@ class ReportTab(ttk.Frame):
             return
         self.refresh()
         if not self.report or not self.report.rows:
-            messagebox.showinfo("Экспорт", "За выбранный период нет записей.", parent=self)
+            info(self, "Экспорт", "За выбранный период нет записей.")
             return
         if period.first:
             name = f"time_report_{period.first:%Y-%m-%d}_{period.last:%Y-%m-%d}.csv"
@@ -287,42 +390,40 @@ class ReportTab(ttk.Frame):
         try:
             core.export_csv(path, self.report, self.app.cfg["currency"])
         except OSError as exc:
-            messagebox.showerror("Экспорт", f"Не удалось сохранить файл:\n{exc}", parent=self)
+            error(self, "Экспорт", f"Не удалось сохранить файл:\n{exc}")
             return
-        messagebox.showinfo("Экспорт", f"Готово:\n{path}", parent=self)
+        info(self, "Экспорт", f"Готово:\n{path}")
 
 
 class RecordsTab(ttk.Frame):
     """Список отдельных отрезков за день: можно исправить проект, удалить или добавить время вручную."""
 
     def __init__(self, parent, mw: "MainWindow"):
-        super().__init__(parent, padding=8)
+        super().__init__(parent, padding=14)
         self.mw = mw
         self.app = mw.app
         self.day = date.today()
-        self.bold = tkfont.nametofont("TkDefaultFont").copy()
-        self.bold.configure(weight="bold")
 
         bar = ttk.Frame(self)
         bar.pack(fill="x")
         ttk.Button(bar, text="◀", width=3, command=lambda: self.shift(-1)).pack(side="left")
         self.day_var = tk.StringVar()
         entry = ttk.Entry(bar, textvariable=self.day_var, width=12)
-        entry.pack(side="left", padx=4)
+        entry.pack(side="left", padx=6)
         entry.bind("<Return>", lambda e: self.goto_entry())
         ttk.Button(bar, text="▶", width=3, command=lambda: self.shift(1)).pack(side="left")
-        ttk.Button(bar, text="Сегодня", command=self.goto_today).pack(side="left", padx=8)
+        ttk.Button(bar, text="Сегодня", command=self.goto_today).pack(side="left", padx=10)
         self.total_var = tk.StringVar()
-        ttk.Label(bar, textvariable=self.total_var, font=self.bold).pack(side="right")
+        ttk.Label(bar, textvariable=self.total_var, style="Info.TLabel").pack(side="right")
 
         wrap = ttk.Frame(self)
-        wrap.pack(fill="both", expand=True, pady=8)
+        wrap.pack(fill="both", expand=True, pady=12)
         self.tree = ttk.Treeview(wrap, columns=("start", "end", "dur", "project", "src"), show="headings",
                                  selectmode="extended")
         for col, text, width, anchor in (("start", "Начало", 110, "w"), ("end", "Конец", 110, "w"),
                                          ("dur", "Длительность", 100, "e"), ("project", "Проект", 280, "w"),
                                          ("src", "", 80, "w")):
-            self.tree.heading(col, text=text)
+            self.tree.heading(col, text=text, anchor=anchor)
             self.tree.column(col, width=width, anchor=anchor)
         sb = ttk.Scrollbar(wrap, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=sb.set)
@@ -332,11 +433,12 @@ class RecordsTab(ttk.Frame):
         btns = ttk.Frame(self)
         btns.pack(fill="x")
         ttk.Button(btns, text="Сменить проект…", command=self.change_project).pack(side="left")
-        ttk.Button(btns, text="Удалить", command=self.delete).pack(side="left", padx=6)
-        ttk.Button(btns, text="Добавить время вручную…", command=self.add_manual).pack(side="right")
-        ttk.Label(self, foreground="#666666", wraplength=780, justify="left",
+        ttk.Button(btns, text="Удалить", style="Danger.TButton", command=self.delete).pack(side="left", padx=8)
+        ttk.Button(btns, text="Добавить время вручную…", style="Accent.TButton",
+                   command=self.add_manual).pack(side="right")
+        ttk.Label(self, style="Muted.TLabel", wraplength=800, justify="left",
                   text="Если забыла выбрать проект, время записывается как «Без проекта». "
-                       "Выделите такие строки и нажмите «Сменить проект».").pack(anchor="w", pady=(8, 0))
+                       "Выделите такие строки и нажмите «Сменить проект».").pack(anchor="w", pady=(10, 0))
 
     def shift(self, days: int) -> None:
         self.day += timedelta(days=days)
@@ -350,7 +452,7 @@ class RecordsTab(ttk.Frame):
         try:
             self.day = core.parse_date(self.day_var.get())
         except ValueError:
-            messagebox.showwarning("Дата", "Формат даты: 31.12.2026", parent=self)
+            warn(self, "Дата", "Формат даты: 31.12.2026")
             return
         self.refresh()
 
@@ -366,7 +468,7 @@ class RecordsTab(ttk.Frame):
             self.tree.insert("", "end", iid=str(s["id"]), values=(
                 self._clock(s["start"], t0), self._clock(s["end"], t0), core.fmt_hms(s["end"] - s["start"]),
                 s["project_name"] or core.NO_PROJECT_NAME, "вручную" if s["source"] == "manual" else ""))
-        self.total_var.set(f"{fmt_day(self.day)}: {core.fmt_hm(total)} ч")
+        self.total_var.set(f"{fmt_day(self.day)} · {core.fmt_hm(total)} ч")
 
     @staticmethod
     def _clock(ts: float, day_start: float) -> str:
@@ -382,11 +484,11 @@ class RecordsTab(ttk.Frame):
     def change_project(self) -> None:
         ids = [int(i) for i in self.tree.selection()]
         if not ids:
-            messagebox.showinfo("Записи", "Сначала выделите строки.", parent=self)
+            info(self, "Записи", "Сначала выделите строки.")
             return
         names, pids = self._project_choices()
         dlg = FormDialog(self, "Сменить проект", [
-            {"key": "project", "label": "Проект:", "choices": names, "value": names[0]}])
+            {"key": "project", "label": "Проект", "choices": names, "value": names[0]}])
         res = dlg.run()
         if not res:
             return
@@ -399,7 +501,7 @@ class RecordsTab(ttk.Frame):
         ids = [int(i) for i in self.tree.selection()]
         if not ids:
             return
-        if not messagebox.askyesno("Удалить", f"Удалить выделенные записи ({len(ids)} шт.)?", parent=self):
+        if not confirm(self, "Удалить", f"Удалить выделенные записи ({len(ids)} шт.)?", yes="Удалить", no="Отмена"):
             return
         if self.app.tracker.seg_id in ids:
             self.app.tracker.seg_id = None            # удалили активный отрезок: начнём новый
@@ -424,10 +526,10 @@ class RecordsTab(ttk.Frame):
             return None
 
         dlg = FormDialog(self, "Добавить время вручную", [
-            {"key": "project", "label": "Проект:", "choices": names, "value": start_name},
-            {"key": "date", "label": "Дата:", "value": self.day.strftime("%d.%m.%Y")},
-            {"key": "start", "label": "Начало (ЧЧ:ММ):", "value": "10:00"},
-            {"key": "end", "label": "Конец (ЧЧ:ММ):", "value": "11:00"},
+            {"key": "project", "label": "Проект", "choices": names, "value": start_name},
+            {"key": "date", "label": "Дата", "value": self.day.strftime("%d.%m.%Y")},
+            {"key": "start", "label": "Начало (ЧЧ:ММ)", "value": "10:00"},
+            {"key": "end", "label": "Конец (ЧЧ:ММ)", "value": "11:00"},
         ], validate=validate)
         res = dlg.run()
         if not res:
@@ -436,8 +538,8 @@ class RecordsTab(ttk.Frame):
         start = datetime.combine(d, core.parse_clock(res["start"])).timestamp()
         end = datetime.combine(d, core.parse_clock(res["end"])).timestamp()
         if self.app.db.segments_between(start, end):
-            if not messagebox.askyesno("Пересечение", "На это время уже есть записи, время посчитается дважды. "
-                                       "Всё равно добавить?", parent=self):
+            if not confirm(self, "Пересечение", "На это время уже есть записи, время посчитается дважды. "
+                           "Всё равно добавить?", yes="Добавить", no="Отмена"):
                 return
         self.app.db.add_manual(pids[names.index(res["project"])], start, end)
         self.day = d
@@ -450,7 +552,7 @@ class ProjectsTab(ttk.Frame):
             "Выбирайте уникальные слова. Несколько слов разделяйте запятой.")
 
     def __init__(self, parent, mw: "MainWindow"):
-        super().__init__(parent, padding=8)
+        super().__init__(parent, padding=14)
         self.mw = mw
         self.app = mw.app
         self.show_archived = tk.BooleanVar(value=False)
@@ -459,10 +561,10 @@ class ProjectsTab(ttk.Frame):
         wrap.pack(fill="both", expand=True)
         self.tree = ttk.Treeview(wrap, columns=("client", "rate", "keywords", "status"), show="tree headings",
                                  selectmode="browse")
-        self.tree.heading("#0", text="Проект")
-        self.tree.heading("client", text="Заказчик")
+        self.tree.heading("#0", text="Проект", anchor="w")
+        self.tree.heading("client", text="Заказчик", anchor="w")
         self.tree.heading("rate", text="Ставка/час")
-        self.tree.heading("keywords", text="Ключевые слова")
+        self.tree.heading("keywords", text="Ключевые слова", anchor="w")
         self.tree.heading("status", text="")
         self.tree.column("#0", width=230)
         self.tree.column("client", width=150)
@@ -476,14 +578,14 @@ class ProjectsTab(ttk.Frame):
         self.tree.bind("<Double-1>", lambda e: self.edit())
 
         btns = ttk.Frame(self)
-        btns.pack(fill="x", pady=8)
-        ttk.Button(btns, text="Добавить проект…", command=self.add).pack(side="left")
-        ttk.Button(btns, text="Изменить…", command=self.edit).pack(side="left", padx=6)
+        btns.pack(fill="x", pady=12)
+        ttk.Button(btns, text="Добавить проект…", style="Accent.TButton", command=self.add).pack(side="left")
+        ttk.Button(btns, text="Изменить…", command=self.edit).pack(side="left", padx=8)
         ttk.Button(btns, text="В архив / из архива", command=self.toggle_archive).pack(side="left")
-        ttk.Button(btns, text="Удалить", command=self.delete).pack(side="left", padx=6)
+        ttk.Button(btns, text="Удалить", style="Danger.TButton", command=self.delete).pack(side="left", padx=8)
         ttk.Checkbutton(btns, text="Показывать архивные", variable=self.show_archived,
                         command=self.refresh).pack(side="right")
-        ttk.Label(self, text=self.HINT, foreground="#666666", wraplength=780, justify="left").pack(anchor="w")
+        ttk.Label(self, text=self.HINT, style="Muted.TLabel", wraplength=800, justify="left").pack(anchor="w")
 
     def refresh(self) -> None:
         self.tree.delete(*self.tree.get_children())
@@ -495,7 +597,7 @@ class ProjectsTab(ttk.Frame):
     def _selected(self) -> Optional[dict]:
         sel = self.tree.selection()
         if not sel:
-            messagebox.showinfo("Проекты", "Сначала выберите проект в списке.", parent=self)
+            info(self, "Проекты", "Сначала выберите проект в списке.")
             return None
         return self.app.db.get_project(int(sel[0]))
 
@@ -510,11 +612,11 @@ class ProjectsTab(ttk.Frame):
             return None
 
         return FormDialog(self, title, [
-            {"key": "name", "label": "Название:", "value": p["name"] if p else ""},
-            {"key": "client", "label": "Заказчик (необязательно):", "value": p["client"] if p else ""},
-            {"key": "rate", "label": f"Ставка в час, {self.app.cfg['currency']} (необязательно):",
+            {"key": "name", "label": "Название", "value": p["name"] if p else ""},
+            {"key": "client", "label": "Заказчик (необязательно)", "value": p["client"] if p else ""},
+            {"key": "rate", "label": f"Ставка в час, {self.app.cfg['currency']} (необязательно)",
              "value": (f"{p['rate']:g}" if p and p["rate"] else "")},
-            {"key": "keywords", "label": "Слова в заголовке окна:", "value": p["keywords"] if p else ""},
+            {"key": "keywords", "label": "Слова в заголовке окна", "value": p["keywords"] if p else ""},
         ], hint="Ставка нужна только для подсчёта суммы в отчёте.", validate=validate).run()
 
     def add(self) -> None:
@@ -546,10 +648,10 @@ class ProjectsTab(ttk.Frame):
         p = self._selected()
         if not p:
             return
-        if not messagebox.askyesno(
-                "Удалить проект",
+        if not confirm(
+                self, "Удалить проект",
                 f"Удалить проект «{p['name']}»?\nЕго записи не пропадут, а станут «Без проекта».\n"
-                "Если проект просто закончился, лучше отправьте его в архив.", parent=self):
+                "Если проект просто закончился, лучше отправьте его в архив.", yes="Удалить", no="Отмена"):
             return
         self.app.db.delete_project(p["id"])
         self.app.on_projects_changed()
@@ -557,37 +659,41 @@ class ProjectsTab(ttk.Frame):
 
 class SettingsTab(ttk.Frame):
     def __init__(self, parent, mw: "MainWindow"):
-        super().__init__(parent, padding=8)
+        super().__init__(parent, padding=14)
         self.mw = mw
         self.app = mw.app
         cfg = self.app.cfg
 
-        general = ttk.LabelFrame(self, text="Общие", padding=10)
+        general = ttk.LabelFrame(self, text="  ОБЩИЕ  ", padding=14)
         general.pack(fill="x")
         self.idle_var = tk.StringVar(value=f"{cfg['idle_timeout_min']:g}")
         self.poll_var = tk.StringVar(value=f"{cfg['poll_seconds']:g}")
         self.cur_var = tk.StringVar(value=cfg["currency"])
         self.auto_var = tk.BooleanVar(value=core.autostart_enabled())
-        ttk.Label(general, text="Считать простоем, если нет движения мыши/пера (минут):").grid(row=0, column=0, sticky="w", pady=3)
-        ttk.Spinbox(general, from_=1, to=60, width=6, textvariable=self.idle_var).grid(row=0, column=1, padx=8)
-        ttk.Label(general, text="Как часто проверять (секунд):").grid(row=1, column=0, sticky="w", pady=3)
-        ttk.Spinbox(general, from_=1, to=10, width=6, textvariable=self.poll_var).grid(row=1, column=1, padx=8)
-        ttk.Label(general, text="Валюта (для отчётов):").grid(row=2, column=0, sticky="w", pady=3)
-        ttk.Entry(general, textvariable=self.cur_var, width=8).grid(row=2, column=1, padx=8)
+        ttk.Label(general, text="Считать простоем, если нет движения мыши/пера (минут)").grid(
+            row=0, column=0, sticky="w", pady=4)
+        ttk.Spinbox(general, from_=1, to=60, width=6, textvariable=self.idle_var).grid(row=0, column=1, padx=12)
+        ttk.Label(general, text="Как часто проверять (секунд)").grid(row=1, column=0, sticky="w", pady=4)
+        ttk.Spinbox(general, from_=1, to=10, width=6, textvariable=self.poll_var).grid(row=1, column=1, padx=12)
+        ttk.Label(general, text="Валюта (для отчётов)").grid(row=2, column=0, sticky="w", pady=4)
+        ttk.Entry(general, textvariable=self.cur_var, width=8).grid(row=2, column=1, padx=12)
         ttk.Checkbutton(general, text="Запускать вместе с Windows", variable=self.auto_var).grid(
-            row=3, column=0, columnspan=2, sticky="w", pady=3)
-        ttk.Button(general, text="Сохранить", command=self.save_general).grid(row=4, column=0, sticky="w", pady=(8, 0))
+            row=3, column=0, columnspan=2, sticky="w", pady=4)
+        ttk.Button(general, text="Сохранить", style="Accent.TButton", command=self.save_general).grid(
+            row=4, column=0, sticky="w", pady=(10, 0))
         self.saved_var = tk.StringVar()
-        ttk.Label(general, textvariable=self.saved_var, foreground="#2e7d32").grid(row=4, column=1, sticky="w", pady=(8, 0))
+        ttk.Label(general, textvariable=self.saved_var, style="Success.TLabel").grid(
+            row=4, column=1, sticky="w", pady=(10, 0))
 
-        apps = ttk.LabelFrame(self, text="Рабочие программы и вкладки (время идёт, только если активно одно из них)", padding=10)
-        apps.pack(fill="both", expand=True, pady=(10, 0))
+        apps = ttk.LabelFrame(self, text="  РАБОЧИЕ ПРОГРАММЫ И ВКЛАДКИ (время идёт, только если активно одно из них)  ",
+                              padding=14)
+        apps.pack(fill="both", expand=True, pady=(14, 0))
         wrap = ttk.Frame(apps)
         wrap.pack(fill="both", expand=True)
-        self.tree = ttk.Treeview(wrap, columns=("kind", "pattern"), show="tree headings", selectmode="browse", height=8)
-        self.tree.heading("#0", text="Название")
-        self.tree.heading("kind", text="Тип")
-        self.tree.heading("pattern", text="Ищем (часть имени)")
+        self.tree = ttk.Treeview(wrap, columns=("kind", "pattern"), show="tree headings", selectmode="browse", height=7)
+        self.tree.heading("#0", text="Название", anchor="w")
+        self.tree.heading("kind", text="Тип", anchor="w")
+        self.tree.heading("pattern", text="Ищем (часть имени)", anchor="w")
         self.tree.column("#0", width=230)
         self.tree.column("kind", width=230)
         self.tree.column("pattern", width=200)
@@ -597,17 +703,17 @@ class SettingsTab(ttk.Frame):
         sb.pack(side="right", fill="y")
         self.tree.bind("<Double-1>", lambda e: self.edit_app())
         btns = ttk.Frame(apps)
-        btns.pack(fill="x", pady=(8, 0))
-        ttk.Button(btns, text="Добавить…", command=self.add_app).pack(side="left")
-        ttk.Button(btns, text="Изменить…", command=self.edit_app).pack(side="left", padx=6)
-        ttk.Button(btns, text="Удалить", command=self.delete_app).pack(side="left")
+        btns.pack(fill="x", pady=(10, 0))
+        ttk.Button(btns, text="Добавить…", style="Accent.TButton", command=self.add_app).pack(side="left")
+        ttk.Button(btns, text="Изменить…", command=self.edit_app).pack(side="left", padx=8)
+        ttk.Button(btns, text="Удалить", style="Danger.TButton", command=self.delete_app).pack(side="left")
         ttk.Button(btns, text="Вернуть список по умолчанию", command=self.reset_apps).pack(side="right")
-        ttk.Label(apps, foreground="#666666", wraplength=780, justify="left",
+        ttk.Label(apps, style="Muted.TLabel", wraplength=800, justify="left",
                   text="Совет: нажмите «Добавить…», затем «Определить программу», за 5 секунд переключитесь "
                        "на нужное окно, и имя подставится само. Для сайтов в браузере выбирайте «заголовок "
                        "вкладки» и слово из названия вкладки (например, ArtStation, Pinterest, PureRef)."
-                  ).pack(anchor="w", pady=(8, 0))
-        ttk.Button(self, text="Открыть папку с данными", command=self.app.open_data_folder).pack(anchor="w", pady=(10, 0))
+                  ).pack(anchor="w", pady=(10, 0))
+        ttk.Button(self, text="Открыть папку с данными", command=self.app.open_data_folder).pack(anchor="w", pady=(12, 0))
 
     def refresh(self) -> None:
         self.auto_var.set(core.autostart_enabled())
@@ -621,7 +727,7 @@ class SettingsTab(ttk.Frame):
             idle = float(self.idle_var.get().replace(",", "."))
             poll = float(self.poll_var.get().replace(",", "."))
         except ValueError:
-            messagebox.showwarning("Настройки", "Минуты и секунды должны быть числами.", parent=self)
+            warn(self, "Настройки", "Минуты и секунды должны быть числами.")
             return
         cfg["idle_timeout_min"] = max(0.5, min(120.0, idle))
         cfg["poll_seconds"] = max(1.0, min(10.0, poll))
@@ -630,9 +736,9 @@ class SettingsTab(ttk.Frame):
         try:
             core.set_autostart(self.auto_var.get())
         except OSError as exc:
-            messagebox.showwarning("Автозапуск", f"Не удалось изменить автозапуск:\n{exc}", parent=self)
+            warn(self, "Автозапуск", f"Не удалось изменить автозапуск:\n{exc}")
         self.app.refresh_caches()
-        self.saved_var.set("Сохранено")
+        self.saved_var.set("✓ Сохранено")
         self.after(2500, lambda: self.saved_var.set(""))
 
     # --- список программ ---------------------------------------------------
@@ -640,7 +746,7 @@ class SettingsTab(ttk.Frame):
     def _index(self) -> Optional[int]:
         sel = self.tree.selection()
         if not sel:
-            messagebox.showinfo("Программы", "Сначала выберите строку в списке.", parent=self)
+            info(self, "Программы", "Сначала выберите строку в списке.")
             return None
         return int(sel[0])
 
@@ -653,17 +759,17 @@ class SettingsTab(ttk.Frame):
             return None
 
         dlg = FormDialog(self, title, [
-            {"key": "name", "label": "Название:", "value": a["name"] if a else ""},
-            {"key": "kind", "label": "Тип:", "choices": kinds, "value": KIND_LABELS[a["kind"]] if a else kinds[0]},
-            {"key": "pattern", "label": "Ищем (часть имени):", "value": a["pattern"] if a else ""},
+            {"key": "name", "label": "Название", "value": a["name"] if a else ""},
+            {"key": "kind", "label": "Тип", "choices": kinds, "value": KIND_LABELS[a["kind"]] if a else kinds[0]},
+            {"key": "pattern", "label": "Ищем (часть имени)", "value": a["pattern"] if a else ""},
         ], hint="Регистр не важен. «Программа»: часть имени exe-файла, например blender. "
                 "«Заголовок»: часть текста в заголовке окна или вкладки браузера.", validate=validate)
 
         status = tk.StringVar()
-        ttk.Label(dlg.extra, textvariable=status, foreground="#1565c0", wraplength=440, justify="left").pack(
-            anchor="w", pady=(6, 0))
+        ttk.Label(dlg.extra, textvariable=status, style="Info.TLabel", wraplength=460, justify="left").pack(
+            anchor="w", pady=(8, 0))
         bar = ttk.Frame(dlg.extra)
-        bar.pack(anchor="w", pady=(6, 0))
+        bar.pack(anchor="w", pady=(8, 0))
 
         def detect(mode: str) -> None:
             def fill(proc: str, title_text: str) -> None:
@@ -692,14 +798,14 @@ class SettingsTab(ttk.Frame):
                     return
                 proc, title_text, pid = winapi.foreground_window()
                 if pid == os.getpid() or not proc:
-                    status.set("Не получилось: активным осталось окно WorkTracker. Попробуйте ещё раз.")
+                    status.set(f"Не получилось: активным осталось окно {APP_TITLE}. Попробуйте ещё раз.")
                     return
                 fill(proc, title_text)
 
             countdown(5)
 
         ttk.Button(bar, text="Определить программу (5 сек)", command=lambda: detect("process")).pack(side="left")
-        ttk.Button(bar, text="Взять заголовок окна (5 сек)", command=lambda: detect("title")).pack(side="left", padx=6)
+        ttk.Button(bar, text="Взять заголовок окна (5 сек)", command=lambda: detect("title")).pack(side="left", padx=8)
         return dlg.run()
 
     def _store(self, res: dict, index: Optional[int]) -> None:
@@ -735,8 +841,8 @@ class SettingsTab(ttk.Frame):
         self.refresh()
 
     def reset_apps(self) -> None:
-        if messagebox.askyesno("Список программ", "Вернуть стандартный список? Свои добавленные программы пропадут.",
-                               parent=self):
+        if confirm(self, "Список программ", "Вернуть стандартный список? Свои добавленные программы пропадут.",
+                   yes="Вернуть", no="Отмена"):
             self.app.cfg["apps"] = copy.deepcopy(core.DEFAULT_APPS)
             self.app.cfg.save()
             self.refresh()
@@ -750,40 +856,44 @@ class MainWindow:
     def __init__(self, app: "App"):
         self.app = app
         self.win = tk.Toplevel(app.root)
-        self.win.title("WorkTracker: учёт времени")
-        self.win.geometry("880x640")
-        self.win.minsize(780, 560)
+        self.win.withdraw()                     # покажем, когда всё построено и рамка стала тёмной
+        self.win.title(APP_TITLE)
+        self.win.configure(bg=theme.BG)
+        self.win.geometry("940x700")
+        self.win.minsize(820, 600)
         self.win.protocol("WM_DELETE_WINDOW", self.close)
         self._live_id = None
         self._combo_ids: List[Optional[int]] = [None]
 
-        top = ttk.Frame(self.win, padding=(10, 10, 10, 4))
-        top.pack(fill="x")
-        ttk.Label(top, text="Записывать в проект:").pack(side="left")
+        header = ttk.Frame(self.win, style="Header.TFrame", padding=(18, 14))
+        header.pack(fill="x")
+        ttk.Label(header, text=APP_TITLE, style="Brand.TLabel").pack(side="left", padx=(0, 26))
+        ttk.Label(header, text="Записывать в проект", style="HeaderText.TLabel").pack(side="left")
         self.proj_var = tk.StringVar()
-        self.proj_combo = ttk.Combobox(top, textvariable=self.proj_var, state="readonly", width=30)
-        self.proj_combo.pack(side="left", padx=6)
+        self.proj_combo = ttk.Combobox(header, textvariable=self.proj_var, state="readonly", width=28)
+        self.proj_combo.pack(side="left", padx=10)
         self.proj_combo.bind("<<ComboboxSelected>>", self._on_pick)
-        self.pause_btn = ttk.Button(top, text="Пауза", width=12, command=app.toggle_pause)
-        self.pause_btn.pack(side="left", padx=6)
-        self.live_var = tk.StringVar()
-        bold = tkfont.nametofont("TkDefaultFont").copy()
-        bold.configure(weight="bold")
-        ttk.Label(top, textvariable=self.live_var, font=bold).pack(side="right")
+        self.pause_btn = ttk.Button(header, text="Пауза", width=12, command=app.toggle_pause)
+        self.pause_btn.pack(side="left")
+        self.clock_var = tk.StringVar()
+        ttk.Label(header, textvariable=self.clock_var, style="Clock.TLabel").pack(side="right")
+        self.state_label = ttk.Label(header, style="StateOther.TLabel")
+        self.state_label.pack(side="right", padx=(0, 20))
 
         self.nb = ttk.Notebook(self.win)
-        self.nb.pack(fill="both", expand=True, padx=10, pady=(4, 10))
+        self.nb.pack(fill="both", expand=True, padx=14, pady=(10, 14))
         self.report = ReportTab(self.nb, self)
         self.records = RecordsTab(self.nb, self)
         self.projects = ProjectsTab(self.nb, self)
         self.settings = SettingsTab(self.nb, self)
-        for tab, text in ((self.report, "  Отчёт  "), (self.records, "  Записи  "),
-                          (self.projects, "  Проекты  "), (self.settings, "  Настройки  ")):
+        for tab, text in ((self.report, "Отчёт"), (self.records, "Записи"),
+                          (self.projects, "Проекты"), (self.settings, "Настройки")):
             self.nb.add(tab, text=text)
         self.nb.bind("<<NotebookTabChanged>>", lambda e: self.refresh_current())
 
         self.refresh_projects()
         self.refresh_current()
+        theme.dark_titlebar(self.win)
         self._live()
 
     def exists(self) -> bool:
@@ -828,7 +938,8 @@ class MainWindow:
         if not self.exists():
             return
         t = self.app.tracker
-        self.live_var.set(f"{STATE_LABELS[t.state]}   ·   сегодня {core.fmt_hms(t.today_seconds())}")
+        self.state_label.configure(text=STATE_LABELS[t.state], style=STATE_STYLES[t.state])
+        self.clock_var.set(f"сегодня  {core.fmt_hms(t.today_seconds())}")
         self.pause_btn.configure(text="Продолжить" if t.paused else "Пауза")
         self._live_id = self.win.after(1000, self._live)
 
@@ -859,22 +970,15 @@ class App:
 
         self.root = tk.Tk()
         self.root.withdraw()
-        self.root.title("WorkTracker")
+        self.root.title(APP_TITLE)
         self.root.report_callback_exception = lambda exc, val, tb: log.error("Ошибка в окне", exc_info=(exc, val, tb))
         self._tk_icon = tk.PhotoImage(data=base64.b64encode(png_bytes("recording", 64)))
         try:
             self.root.iconphoto(True, self._tk_icon)
         except tk.TclError:
             pass
-        self._setup_style()
+        theme.apply(self.root)
         fix_clipboard_shortcuts(self.root)
-
-    def _setup_style(self) -> None:
-        style = ttk.Style(self.root)
-        if sys.platform == "win32" and "vista" in style.theme_names():
-            style.theme_use("vista")
-        scale = max(1.0, self.root.winfo_fpixels("1i") / 96.0)
-        style.configure("Treeview", rowheight=int(22 * scale))
 
     # --- работа с потоками -------------------------------------------------
 
@@ -900,7 +1004,7 @@ class App:
 
     def run(self) -> None:
         self.refresh_caches()
-        self.icon = pystray.Icon(core.APP_NAME, self._icon_image("other"), core.APP_NAME,
+        self.icon = pystray.Icon(core.APP_NAME, self._icon_image("other"), APP_TITLE,
                                  menu=pystray.Menu(self._menu_items))
         self.icon.run_detached()
         self.root.after(300, self._pump)
@@ -957,7 +1061,7 @@ class App:
                     "Идёт запись без проекта. Создайте первый проект: правый клик по иконке → «Открыть окно».")
             try:
                 if self.icon:
-                    self.icon.notify(text, "WorkTracker")
+                    self.icon.notify(text, APP_TITLE)
             except Exception:
                 log.exception("Не удалось показать уведомление")
 
@@ -1034,7 +1138,7 @@ class App:
         try:
             core.set_autostart(not core.autostart_enabled())
         except OSError as exc:
-            messagebox.showwarning("Автозапуск", f"Не удалось изменить автозапуск:\n{exc}")
+            warn(self.root, "Автозапуск", f"Не удалось изменить автозапуск:\n{exc}")
         self._cache_autostart = core.autostart_enabled()
         self.refresh_caches()
 
@@ -1058,6 +1162,6 @@ class App:
             if sys.platform == "win32":
                 os.startfile(path)      # type: ignore[attr-defined]
             else:
-                messagebox.showinfo("Папка с данными", path)
+                info(self.root, "Папка с данными", path)
         except OSError:
-            messagebox.showinfo("Папка с данными", path)
+            info(self.root, "Папка с данными", path)

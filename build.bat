@@ -1,5 +1,5 @@
 @echo off
-rem Builds a single dist\WorkTracker.exe (needs Python 3.10+ installed on this PC, once).
+rem Builds a single dist\workyr.exe (needs Python 3.10+ installed on this PC, once).
 cd /d "%~dp0"
 
 python -m pip install --upgrade pip
@@ -9,12 +9,12 @@ if errorlevel 1 goto :fail
 python make_icon.py
 if errorlevel 1 goto :fail
 
-python -m PyInstaller --noconfirm --clean --onefile --noconsole --name WorkTracker ^
+python -m PyInstaller --noconfirm --clean --onefile --noconsole --name workyr ^
   --icon icon.ico --hidden-import pystray._win32 main.py
 if errorlevel 1 goto :fail
 
 echo.
-echo DONE: dist\WorkTracker.exe  (copy this single file to the other PC)
+echo DONE: dist\workyr.exe  (copy this single file to the other PC)
 pause
 exit /b 0
 

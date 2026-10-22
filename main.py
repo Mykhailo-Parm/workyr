@@ -1,4 +1,4 @@
-"""Точка входа WorkTracker: один экземпляр, лог в файл, трей + окно."""
+"""Точка входа workyr: один экземпляр, лог в файл, трей + окно."""
 import logging
 import logging.handlers
 import os
@@ -13,11 +13,11 @@ def _single_instance():
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.CreateMutexW.restype = ctypes.c_void_p
     kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
-    handle = kernel32.CreateMutexW(None, False, "Local\\WorkTrackerSingleInstance")
+    handle = kernel32.CreateMutexW(None, False, "Local\\workyrSingleInstance")
     if ctypes.get_last_error() == 183:      # ERROR_ALREADY_EXISTS
         ctypes.windll.user32.MessageBoxW(
-            0, "WorkTracker уже запущен: ищите иконку с часами возле часов Windows (может быть за стрелкой ^).",
-            "WorkTracker", 0x40)
+            0, "workyr уже запущен: ищите иконку с часами возле часов Windows (может быть за стрелкой ^).",
+            "workyr", 0x40)
         return None
     return handle or True      # даже если мьютекс не создался, запускаемся, а не молча выходим
 
@@ -38,10 +38,10 @@ def _set_dpi_awareness():
 def _setup_logging():
     import core
     handler = logging.handlers.RotatingFileHandler(
-        os.path.join(core.data_dir(), "worktracker.log"), maxBytes=200_000, backupCount=1, encoding="utf-8")
+        os.path.join(core.data_dir(), "workyr.log"), maxBytes=200_000, backupCount=1, encoding="utf-8")
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
     logging.basicConfig(level=logging.INFO, handlers=[handler])
-    sys.excepthook = lambda t, v, tb: logging.getLogger("worktracker").error("Необработанная ошибка", exc_info=(t, v, tb))
+    sys.excepthook = lambda t, v, tb: logging.getLogger("workyr").error("Необработанная ошибка", exc_info=(t, v, tb))
 
 
 def main():

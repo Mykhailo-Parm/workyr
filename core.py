@@ -1,4 +1,4 @@
-"""Ядро WorkTracker: настройки, база данных, логика учёта времени и отчёты.
+"""Ядро workyr: настройки, база данных, логика учёта времени и отчёты.
 
 Здесь нет ни Windows API, ни интерфейса: модуль легко тестируется на любой системе.
 """
@@ -17,9 +17,9 @@ from datetime import date, datetime, timedelta
 from datetime import time as dtime
 from typing import Dict, List, Optional, Tuple
 
-log = logging.getLogger("worktracker.core")
+log = logging.getLogger("workyr.core")
 
-APP_NAME = "WorkTracker"
+APP_NAME = "workyr"
 MIN_SEGMENT_SECONDS = 5.0   # более короткие отрезки считаем случайными и не сохраняем
 FLUSH_SECONDS = 15.0        # как часто дописываем текущий отрезок в базу
 NO_PROJECT_NAME = "Без проекта"
@@ -30,7 +30,7 @@ NO_PROJECT_NAME = "Без проекта"
 # ----------------------------------------------------------------------------
 
 def data_dir() -> str:
-    override = os.environ.get("WORKTRACKER_DATA")
+    override = os.environ.get("WORKYR_DATA")
     if override:
         base = override
     else:

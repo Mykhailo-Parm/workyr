@@ -15,7 +15,7 @@ class Sim:
     """Прогоняет трекер по сценарию с шагом poll секунд."""
 
     def __init__(self, tmp):
-        os.environ["WORKTRACKER_DATA"] = tmp
+        os.environ["WORKYR_DATA"] = tmp
         self.cfg = core.Config(os.path.join(tmp, "config.json"))
         self.db = core.Database(os.path.join(tmp, "t.db"))
         self.tr = core.Tracker(self.db, self.cfg)
@@ -156,7 +156,7 @@ class TrackerTests(unittest.TestCase):
 class ReportTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        os.environ["WORKTRACKER_DATA"] = self.tmp.name
+        os.environ["WORKYR_DATA"] = self.tmp.name
         self.db = core.Database(os.path.join(self.tmp.name, "t.db"))
 
     def tearDown(self):
@@ -227,7 +227,7 @@ class ReportTests(unittest.TestCase):
 class ConfigTests(unittest.TestCase):
     def test_roundtrip_and_sanitize(self):
         with tempfile.TemporaryDirectory() as tmp:
-            os.environ["WORKTRACKER_DATA"] = tmp
+            os.environ["WORKYR_DATA"] = tmp
             path = os.path.join(tmp, "config.json")
             cfg = core.Config(path)
             cfg["apps"].append({"name": "Maya", "kind": "process", "pattern": "maya"})
@@ -243,7 +243,7 @@ class ConfigTests(unittest.TestCase):
 
     def test_defaults_not_shared(self):
         with tempfile.TemporaryDirectory() as tmp:
-            os.environ["WORKTRACKER_DATA"] = tmp
+            os.environ["WORKYR_DATA"] = tmp
             cfg = core.Config(os.path.join(tmp, "c.json"))
             cfg["apps"].append({"name": "x", "kind": "process", "pattern": "x"})
             self.assertEqual(len(core.DEFAULT_APPS), 8)
